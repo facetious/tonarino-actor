@@ -963,6 +963,10 @@ impl<M: 'static> Recipient<M> {
             control_tx: self.control_tx.clone(),
         }
     }
+
+    pub fn tracker(&self) -> Tracker {
+        Tracker { message_tx: Arc::new(Arc::clone(&self.message_tx)) }
+    }
 }
 
 pub trait SendResultExt {
@@ -1005,7 +1009,7 @@ struct MessageSender<M> {
 }
 
 /// Internal trait to generalize over [`Sender`].
-trait SenderTrait<M>: Send + Sync {
+trait SenderTrait<M>: TrackerTrait + Send + Sync {
     fn try_send(&self, message: M) -> Result<(), SendError>;
 }
 
@@ -1029,6 +1033,54 @@ impl<M: Send> SenderTrait<M> for MessageSender<M> {
 impl<M: Into<N>, N> SenderTrait<M> for Arc<dyn SenderTrait<N>> {
     fn try_send(&self, message: M) -> Result<(), SendError> {
         self.deref().try_send(message.into())
+    }
+}
+
+#[derive(Clone)]
+pub struct Tracker {
+    message_tx: Arc<dyn TrackerTrait>,
+}
+
+impl Tracker {
+    pub fn queue_len(&self) -> TrackerQueues {
+        self.message_tx.queue_len()
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct QueueLen {
+    pub pending: usize,
+    pub capacity: Option<usize>,
+}
+
+#[derive(Copy, Clone)]
+pub struct TrackerQueues {
+    pub normal: QueueLen,
+    pub high: QueueLen,
+}
+
+trait TrackerTrait: Send + Sync {
+    fn queue_len(&self) -> TrackerQueues;
+}
+
+impl<M: Send> TrackerTrait for MessageSender<M> {
+    fn queue_len(&self) -> TrackerQueues {
+        TrackerQueues {
+            normal: QueueLen {
+                pending: self.normal.len(),
+                capacity: self.normal.capacity(),
+            },
+            high: QueueLen {
+                pending: self.high.len(),
+                capacity: self.high.capacity(),
+            },
+        }
+    }
+}
+
+impl<M> TrackerTrait for Arc<dyn SenderTrait<M>> {
+    fn queue_len(&self) -> TrackerQueues {
+        self.deref().queue_len()
     }
 }
 
